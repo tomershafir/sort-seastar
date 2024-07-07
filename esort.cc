@@ -169,7 +169,7 @@ seastar::future<> coordinator::sort_init() {
 }
 
 static bool unwrap_strncmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
-    return std::strncmp(lhs.get(), rhs.get(), record_size_bytes) <= 0;
+    return std::strncmp(lhs.get(), rhs.get(), record_size_bytes) < 0;
 }
 
 seastar::future<> coordinator::sort_part(const int shard_id, const int part_idx) {

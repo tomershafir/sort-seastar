@@ -58,7 +58,7 @@ using reserve() on record vectors.
 - Cache open fds to reduce open() syscall count. Also rollover prev-prev pass files, using the fd cache, instead of additional opens and unmaps. Switch to use inter-shard file handles.
 - Add a uuid to temporary file names to avoid collision.
 - Consider decetralized coordination to improve parallelism. For example, we can leverge the tree model of merge-sort so that local serialization is needed only where nodes join bottom-up.
-- Try optimize compiler ordering of branches with `[[likely]]` and `[[unlikely]]`.
+- Try optimize compiler ordering of branches with `[[likely]]` and `[[unlikely]]`. Better just do PGO.
 - Try to embed `merge_pass_finalize` into `merge_two_parts` to become `merge_two_front_parts` with a valid new part inter-shard allocation.
 
 ## Known issues
