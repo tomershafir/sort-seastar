@@ -30,3 +30,15 @@
 *.exe
 *.out
 *.app
+
+# Build direcories
+/build
+/build_*
+/build-*
+
+# IDE
+.vscode
+
+# tmp files
+*.sorted
+*.sorted.*
