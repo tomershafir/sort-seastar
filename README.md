@@ -33,11 +33,6 @@ Linux ubuntu 6.5.10-orbstack-00110-gbcfe04c86d2f #1 SMP Fri Nov  3 10:20:37 UTC 
 - TODO: add automated integration testing unit testing (where needed), add fuzz tests, and perform active benchmarking, using OSS Google libs.
 - TODO: profile and optimize.
 
-```Bash
-$ uname -a
-Linux ubuntu 6.5.10-orbstack-00110-gbcfe04c86d2f #1 SMP Fri Nov  3 10:20:37 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux
-```
-
 ## Improvements
 
 - Investigate logs:
