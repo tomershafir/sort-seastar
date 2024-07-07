@@ -1,4 +1,6 @@
-# external-sort-cpp
+# esort
+
+External sort utility, written in C++ using Seastar framework.
 
 ## Build
 
@@ -7,7 +9,7 @@
 
 ```Bash
 export seastar_dir=/Users/tomersha/Desktop/tomer/my-repos/seastar
-cd external-sort-cpp
+cd esort
 mkdir -p build
 cmake -S . -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_PREFIX_PATH="$seastar_dir/build/release;$seastar_dir/build/release/_cooking/installed" -DCMAKE_MODULE_PATH=$seastar_dir/cmake -DENABLE_UBSAN=1 -B build
 cmake --build build
@@ -16,14 +18,20 @@ cmake --build build
 ## Run
 
 ```Bash
-./build/esort ./testdata/text-kib.txt
+./build/esort <path>
 ```
 
 ## Test
 
-- TODO: add automated integration testing, fuzz testing, benchmarking, and unit testing (where needed), using OSS Google libs, on a big heterogenous corpus.
-- TODO: profile with pprof and optimize.
-- Tested manually with some examples on a VM on a Mac M1:
+I tested manually with the uncompressed `./testdata` examples on a Mac M1 Linux VM:
+
+```Bash
+$ uname -a
+Linux ubuntu 6.5.10-orbstack-00110-gbcfe04c86d2f #1 SMP Fri Nov  3 10:20:37 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux
+```
+
+- TODO: add automated integration testing unit testing (where needed), add fuzz tests, and perform active benchmarking, using OSS Google libs.
+- TODO: profile and optimize.
 
 ```Bash
 $ uname -a
@@ -32,7 +40,11 @@ Linux ubuntu 6.5.10-orbstack-00110-gbcfe04c86d2f #1 SMP Fri Nov  3 10:20:37 UTC 
 
 ## Improvements
 
-- Investigate Seastar reactor stall stdout log lines.
+- Investigate logs:
+
+1. Reactor stalls.
+2. Rate-limit: suppressed 12 backtraces on shard
+
 - Bulkify I/O on sort and merge (I started with random I/O because it was simpler and due to time constraints). It should also improve memory allocation efficiency, by doing less bigger allocations,
 using reserve() on record vectors.
 
@@ -60,5 +72,3 @@ using reserve() on record vectors.
 - Consider decetralized coordination to improve parallelism. For example, we can leverge the tree model of merge-sort so that local serialization is needed only where nodes join bottom-up.
 - Try optimize compiler ordering of branches with `[[likely]]` and `[[unlikely]]`. Better just do PGO.
 - Try to embed `merge_pass_finalize` into `merge_two_parts` to become `merge_two_front_parts` with a valid new part inter-shard allocation.
-
-## Known issues

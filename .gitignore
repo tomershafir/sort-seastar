@@ -39,6 +39,9 @@
 # IDE
 .vscode
 
-# tmp files
+# Mac
+.DS_Store
+
+# Output files
 *.sorted
 *.sorted.*
