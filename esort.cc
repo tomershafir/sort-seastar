@@ -279,6 +279,7 @@ seastar::future<> coordinator::merge_two_parts(const int shard_id, const int par
 }
 
 void coordinator::merge_pass_finalize() {
+    // Squash merged parts
     for (unsigned int s = 0; s < shard_count; ++s) {
         auto part_count_per_shard = parts_per_shard[s].size();
         if (part_count_per_shard > 1) {
