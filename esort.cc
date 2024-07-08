@@ -38,11 +38,8 @@
 // 2. Create sorted runs on the storage device.
 // 3. Merge multiple parts at a time on each shard, until there is a single sorted file.
 
-#include <iostream>
-#include <memory>
 #include <ranges>
 #include <cstdlib>
-#include <string>
 #include <cmath>
 #include <vector>
 #include <deque>
