@@ -85,7 +85,7 @@ class coordinator {
 
     size_t pass;
     // Dequeue is implemented similar to a hashed array tree. It supports efficient random access
-    // and efficient inserts/erases at the front/back.
+    // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
 
     seastar::sstring new_file_path(const int pass, const int part_id);
