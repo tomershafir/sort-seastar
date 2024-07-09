@@ -280,7 +280,7 @@ void coordinator::merge_pass_finalize() {
     for (unsigned int s = 0; s < shard_count; ++s) {
         auto part_count_per_shard = parts_per_shard[s].size();
         if (part_count_per_shard > 1) {
-            for (size_t _ = 0; _ < part_count_per_shard / 2; _+=2) {
+            for (size_t _ = 0; _ < part_count_per_shard / 2; ++_) {
                 auto p1 = parts_per_shard[s].front();
                 parts_per_shard[s].pop_front();
                 auto p2 = parts_per_shard[s].front();
