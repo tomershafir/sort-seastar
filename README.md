@@ -56,6 +56,8 @@ using reserve() on record vectors.
 - Add a setting min_shard_size_bytes or similar to shut sharding off for small files.
 - Distribute the shard 0 centralized coordinator and avoid inefficient remote memory access on a NUMA node.
 - Document effective max file size that is supported, by the used integer data types. Fine tune the types if needed.
+- Document storage free space requirements.
+- Handle exceptional exit and signals by deleting temporary files.
 - Probe the storage for block size (it may be 8KiB) and align record access to it.
 - Assign parts to a subset of the shards if possible when part_count_per_shard_uniform == 0 using partial round-robin.
 - Support other in memory sorting algorithms.
