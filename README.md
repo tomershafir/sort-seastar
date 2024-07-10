@@ -47,7 +47,7 @@ using reserve() on record vectors.
 1. Probe HW and decide a specific execution plan accordingly.
 2. Do sequential reads and writes and parse the records in a memory buffer on HDDs (I/O is usually bottleneck on modern archs). Files may not be sequential, depending on the system state and the storage alogrithms. But for example a ScyllaDB server SSTable file should be mostly sequential.
 3. On the other hand, SSDs supports parallel random access. Partition the file into smaller parts based on available memory per shard and issue I/O ops in parallel using seastar::parallel_for_each instead of seastar::do_for_each.
-4. Try 2 on HDDs.
+4. Try 3 on HDDs.
 5. Measure 2,3,4.
 6. Check `allocate_aligned_buffer`.
 
