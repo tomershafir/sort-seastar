@@ -51,7 +51,7 @@ using reserve() on record vectors.
 5. Measure 2,3,4.
 6. Check `allocate_aligned_buffer`.
 
-- Measure io_uring/aio/io_uring backends.
+- Measure epoll/aio/io_uring backends.
 - Support memory relative memory_reserve_userspace_total_bytes, benchmark and fine tune the default setting.
 - Add a setting min_shard_size_bytes or similar to shut sharding off for small files.
 - Distribute the shard 0 centralized coordinator and avoid inefficient remote memory access on a NUMA node.
