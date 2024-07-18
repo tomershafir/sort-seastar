@@ -65,10 +65,10 @@ struct part {
     uint64_t start;
     size_t limit;
     size_t pass;
-    seastar::sstring path;
+    seastar::sstring path_cache;
 
     part(const uint64_t id, const uint64_t start, const size_t limit, const size_t pass, const seastar::sstring path) : 
-        id(id), start(start), limit(limit), pass(pass), path(path) {}
+        id(id), start(start), limit(limit), pass(pass), path_cache(path) {}
 };
 
 class coordinator {
@@ -185,7 +185,7 @@ seastar::future<> coordinator::sort_part(const int shard_id, const int part_idx)
     std::sort(std::begin(records), std::end(records), unwrap_strncmp);
 
     // Write a new sorted part to storage
-    auto out = co_await seastar::open_file_dma(part.path, seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
+    auto out = co_await seastar::open_file_dma(part.path_cache, seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
     auto records_count = records.size();
     uint64_t offset = 0;
     for (size_t r = 0; r < records_count; ++r, offset += record_size_bytes) {
@@ -230,8 +230,8 @@ void coordinator::merge_pass_init() {
 seastar::future<> coordinator::merge_two_parts(const int shard_id, const int part_idx1, const int part_idx2) {
     auto& p1 = parts_per_shard[shard_id][part_idx1];
     auto& p2 = parts_per_shard[shard_id][part_idx2];
-    auto in1 = co_await seastar::open_file_dma(p1.path, seastar::open_flags::ro);
-    auto in2 = co_await seastar::open_file_dma(p2.path, seastar::open_flags::ro);
+    auto in1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
+    auto in2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
     auto out = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
 
     // Parts are not empty
@@ -271,8 +271,8 @@ seastar::future<> coordinator::merge_two_parts(const int shard_id, const int par
     }
 
     // Unmap old files after merge is finished
-    co_await seastar::remove_file(p1.path);
-    co_await seastar::remove_file(p2.path);
+    co_await seastar::remove_file(p1.path_cache);
+    co_await seastar::remove_file(p2.path_cache);
 }
 
 void coordinator::merge_pass_finalize() {
@@ -316,7 +316,7 @@ seastar::future<> coordinator::merge_all() {
         merge_pass_finalize();
     }
     // Remap final sorted file, the algorithm guarantees that parts_per_shard[0][0].path stores the path
-    co_await seastar::rename_file(parts_per_shard[0][0].path, source_file_path + ".sorted");
+    co_await seastar::rename_file(parts_per_shard[0][0].path_cache, source_file_path + ".sorted");
 }
 
 seastar::future<> coordinator::external_sort() {
