@@ -1,11 +1,11 @@
 cmake_minimum_required (VERSION 3.13)
 
-project (external-sort-cpp)
+project (sort-seastar)
 
 set (CMAKE_CXX_STANDARD 23)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set (TARGET esort)
+set (TARGET ssort)
 
 # TODO: enable other sanitizers
 option (ENABLE_UBSAN OFF)
@@ -13,7 +13,7 @@ set (UBSAN_OPTIONS -fsanitize=undefined)
 
 find_package (Seastar REQUIRED)
 
-add_executable (${TARGET} "esort.cc")
+add_executable (${TARGET} "ssort.cc")
 
 target_compile_options(${TARGET} PRIVATE -Wall -O2 -g)
 

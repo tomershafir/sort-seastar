@@ -51,7 +51,7 @@
 #include <seastar/core/memory.hh>
 #include <seastar/core/sstring.hh>
 
-namespace esort {
+namespace ssort {
 
 // Reserved memory for userspace tasks beside the parts
 static const size_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
@@ -340,7 +340,7 @@ int main(int argc, char** argv) {
         try {
             auto args = app.configuration();
             auto path = args[arg_path].as<seastar::sstring>();
-            esort::coordinator c(path);
+            ssort::coordinator c(path);
             co_await c.external_sort();
         } catch (...) {
             std::cerr << "Failed to run: " << std::current_exception() << "\n";

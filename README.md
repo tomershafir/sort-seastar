@@ -1,4 +1,4 @@
-# esort
+# sort-seastar
 
 External sort utility, written in C++ using Seastar framework.
 
@@ -9,7 +9,7 @@ External sort utility, written in C++ using Seastar framework.
 
 ```Bash
 export seastar_dir=/Users/tomersha/Desktop/tomer/my-repos/seastar
-cd esort
+cd sort-seastar
 mkdir -p build
 cmake -S . -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_PREFIX_PATH="$seastar_dir/build/release;$seastar_dir/build/release/_cooking/installed" -DCMAKE_MODULE_PATH=$seastar_dir/cmake -DENABLE_UBSAN=1 -B build
 cmake --build build
@@ -18,7 +18,7 @@ cmake --build build
 ## Run
 
 ```Bash
-./build/esort <path>
+./build/ssort <path>
 ```
 
 ## Test
