@@ -54,6 +54,8 @@
 
 namespace ssort {
 
+using seastar_file_smart = seastar::file;
+
 // Reserved memory for userspace tasks beside the parts
 static const uint64_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
 
@@ -76,7 +78,7 @@ struct part {
 class coordinator {
     const seastar::sstring& source_file_path;
     uint64_t source_file_size;
-    seastar::file source_file_ro_cache;
+    seastar_file_smart source_file_ro_cache;
     
     uint64_t disk_read_dma_alignment_cache;
     uint64_t disk_write_dma_alignment_cache;
