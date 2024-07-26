@@ -70,3 +70,6 @@ using reserve() on record vectors.
 - Consider decetralized coordination to improve parallelism. For example, we can leverge the tree model of merge-sort so that local serialization is needed only where nodes join bottom-up.
 - Try optimize compiler ordering of branches with `[[likely]]` and `[[unlikely]]`. Better just do PGO.
 - Try to embed `merge_pass_finalize` into `merge_two_parts` to become `merge_two_front_parts` with a valid new part inter-shard allocation.
+- Consider to mmap the file. Need to think about a file locking method to avoid corruption by other processes or document that it's undefined behaviour, and about swap minimization.
+- Consider to use a radix sort for fixed length records.
+- Try to sort a buffer in place using std::sort and a custom fixed_length_string_iterator.
