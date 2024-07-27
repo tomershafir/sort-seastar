@@ -73,3 +73,4 @@ using reserve() on record vectors.
 - Consider to mmap the file. Need to think about a file locking method to avoid corruption by other processes or document that it's undefined behaviour, and about swap minimization.
 - Consider to use a radix sort for fixed length records.
 - Try to sort a buffer in place using std::sort and a custom fixed_length_string_iterator.
+- Evaluate other strategies to allocate available memory to read and write buffers on merge, depending on storage device type, e.g. add a knpb to prefer read or write sequentiality.

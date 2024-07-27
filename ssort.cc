@@ -51,6 +51,7 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/core/sstring.hh>
+#include <seastar/core/fstream.hh>
 
 namespace ssort {
 
@@ -60,6 +61,8 @@ using seastar_file_smart = seastar::file;
 static const uint64_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
 
 static const uint64_t record_size_bytes = 4096; // 4 KiB
+
+static const uint64_t merge_k_way = 2;
 
 struct part {
     // Unique only in a single pass scope, reused across passes
@@ -87,6 +90,9 @@ class coordinator {
 
     uint64_t memory_part_whole_bytes_aligned;
     uint64_t record_count_per_part_whole;
+
+    uint64_t memory_part_whole_bytes_aligned_merge_read;
+    uint64_t memory_part_whole_bytes_aligned_merge_write;
 
     uint64_t part_count_total;
     bool last_part_short;
@@ -142,6 +148,9 @@ seastar::future<> coordinator::plan_memory_usage() {
     source_file_size = co_await source_file_ro_cache.size();
     record_count_per_part_whole = std::min(source_file_size, memory_parts_total_bytes) / shard_count / record_size_bytes;
     memory_part_whole_bytes_aligned = record_count_per_part_whole * record_size_bytes;
+
+    memory_part_whole_bytes_aligned_merge_read = record_count_per_part_whole / (merge_k_way + 1) * record_size_bytes;
+    memory_part_whole_bytes_aligned_merge_write = memory_part_whole_bytes_aligned_merge_read;
 }
 
 seastar::future<> coordinator::sort_init() {
@@ -247,7 +256,9 @@ seastar::future<> coordinator::merge_two_parts(const int shard_id, const int par
     auto& p2 = parts_per_shard[shard_id][part_idx2];
     auto in1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
     auto in2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
-    auto out = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
+    
+    auto out_file = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
+    auto out_buf_sequential = co_await seastar::make_file_output_stream(std::move(out_file), memory_part_whole_bytes_aligned_merge_write);
 
     // Parts are not empty
     auto offset_read1 = p1.start_aligned;
@@ -256,35 +267,34 @@ seastar::future<> coordinator::merge_two_parts(const int shard_id, const int par
     auto offset_read2 = p2.start_aligned;
     auto offset_read_limit2 = p2.start_aligned + p2.limit_aligned;
     auto buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-    uint64_t offset_write = 0;
     while (true) {
         if (unwrap_strncmp(buf1, buf2)) {
-            co_await out.dma_write<char>(offset_write, buf1.get(), record_size_bytes);
+            co_await out_buf_sequential.write(buf1.get(), record_size_bytes);
             offset_read1 += record_size_bytes;
             if (offset_read1 >= offset_read_limit1) {
                 break;
             }
             buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
         } else {
-            co_await out.dma_write<char>(offset_write, buf2.get(), record_size_bytes);
+            co_await out_buf_sequential.write(buf2.get(), record_size_bytes);
             offset_read2 += record_size_bytes;
             if (offset_read2 >= offset_read_limit2) {
                 break;
             }
             buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
         }
-        offset_write += record_size_bytes;
     }
-    offset_write += record_size_bytes;
-    for (; offset_read1 < offset_read_limit1; offset_read1 += record_size_bytes, offset_write += record_size_bytes) {
+    for (; offset_read1 < offset_read_limit1; offset_read1 += record_size_bytes) {
         buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
-        co_await out.dma_write<char>(offset_write, buf1.get(), record_size_bytes);
+        co_await out_buf_sequential.write(buf1.get(), record_size_bytes);
     }
-    for (; offset_read2 < offset_read_limit2; offset_read2 += record_size_bytes, offset_write += record_size_bytes) {
+    for (; offset_read2 < offset_read_limit2; offset_read2 += record_size_bytes) {
         buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-        co_await out.dma_write<char>(offset_write, buf2.get(), record_size_bytes);
+        co_await out_buf_sequential.write(buf2.get(), record_size_bytes);
     }
 
+    co_await out_buf_sequential.close();
+    
     // Unmap old files after merge is finished
     co_await seastar::remove_file(p1.path_cache);
     co_await seastar::remove_file(p2.path_cache);
