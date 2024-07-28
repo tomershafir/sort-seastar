@@ -190,7 +190,7 @@ seastar::future<> coordinator::sort_init() {
     }
 }
 
-int cmp(const void *rhs, const void *lhs) {
+static int cmp(const void *rhs, const void *lhs) {
     return strncmp((const char*)rhs, (const char*)lhs, record_size_bytes);
 }
 
@@ -247,56 +247,59 @@ void coordinator::merge_pass_init() {
     }
 }
 
-static bool unwrap_strncmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
+static bool cmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
     return std::strncmp(lhs.get(), rhs.get(), record_size_bytes) < 0;
 }
 
 seastar::future<> coordinator::merge_two_parts(const int shard_id, const int part_idx1, const int part_idx2) {
     auto& p1 = parts_per_shard[shard_id][part_idx1];
     auto& p2 = parts_per_shard[shard_id][part_idx2];
-    auto in1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
-    auto in2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
+    
+    auto in_file1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
+    auto in_buf1 = seastar::make_file_input_stream(
+        std::move(in_file1),
+        p1.start_aligned,
+        {.buffer_size = memory_part_whole_bytes_aligned_merge_read, .read_ahead = 0, .dynamic_adjustments = nullptr}
+    );
+    auto in_file2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
+    auto in_buf2 = seastar::make_file_input_stream(
+        std::move(in_file2),
+        p2.start_aligned,
+        {.buffer_size = memory_part_whole_bytes_aligned_merge_read, .read_ahead = 0, .dynamic_adjustments = nullptr}
+    );
     
     auto out_file = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
-    auto out_buf_sequential = co_await seastar::make_file_output_stream(
+    auto out_buf = co_await seastar::make_file_output_stream(
         std::move(out_file), 
         {.buffer_size = memory_part_whole_bytes_aligned_merge_write, .preallocation_size = 0, .write_behind = 1}
     );
 
     // Parts are not empty
-    auto offset_read1 = p1.start_aligned;
-    auto offset_read_limit1 = p1.start_aligned + p1.limit_aligned;
-    auto buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
-    auto offset_read2 = p2.start_aligned;
-    auto offset_read_limit2 = p2.start_aligned + p2.limit_aligned;
-    auto buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-    while (true) {
-        if (unwrap_strncmp(buf1, buf2)) {
-            co_await out_buf_sequential.write(buf1.get(), record_size_bytes);
-            offset_read1 += record_size_bytes;
-            if (offset_read1 >= offset_read_limit1) {
-                break;
-            }
-            buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
+    auto buf1 = co_await in_buf1.read_exactly(record_size_bytes);
+    auto buf2 = co_await in_buf2.read_exactly(record_size_bytes);
+    // Empty buffer from read_exactly() effectively means EOF for fixed length string aligned file
+    while (!buf1.empty() && !buf2.empty()) {
+        if (cmp(buf1, buf2)) {
+            co_await out_buf.write(buf1.get(), record_size_bytes);
+            buf1 = co_await in_buf1.read_exactly(record_size_bytes);
         } else {
-            co_await out_buf_sequential.write(buf2.get(), record_size_bytes);
-            offset_read2 += record_size_bytes;
-            if (offset_read2 >= offset_read_limit2) {
-                break;
-            }
-            buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
+            co_await out_buf.write(buf2.get(), record_size_bytes);
+            buf2 = co_await in_buf2.read_exactly(record_size_bytes);
         }
     }
-    for (; offset_read1 < offset_read_limit1; offset_read1 += record_size_bytes) {
-        buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
-        co_await out_buf_sequential.write(buf1.get(), record_size_bytes);
+    // Merge remainder from part 1
+    while (!buf1.empty()) {
+        co_await out_buf.write(buf1.get(), record_size_bytes);
+        buf1 = co_await in_buf1.read_exactly(record_size_bytes);
     }
-    for (; offset_read2 < offset_read_limit2; offset_read2 += record_size_bytes) {
-        buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-        co_await out_buf_sequential.write(buf2.get(), record_size_bytes);
+    // Merge remainder from part 2
+    while (!buf2.empty()) {
+        co_await out_buf.write(buf2.get(), record_size_bytes);
+        buf2 = co_await in_buf2.read_exactly(record_size_bytes);
     }
 
-    co_await out_buf_sequential.close();
+    // Flush output buffer and close the stream and the underlying file
+    co_await out_buf.close();
     
     // Unmap old files after merge is finished
     co_await seastar::remove_file(p1.path_cache);
