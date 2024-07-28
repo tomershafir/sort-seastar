@@ -45,52 +45,70 @@
 #include <deque>
 #include <cstring>
 #include <algorithm>
+#include <cstdlib>
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/core/sstring.hh>
+#include <seastar/core/fstream.hh>
 
 namespace ssort {
 
-// Reserved memory for userspace tasks beside the parts
-static const size_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
+using seastar_file_smart = seastar::file;
 
-static const size_t record_size_bytes = 4096; // 4 KiB
+// Reserved memory for userspace tasks beside the parts
+static const uint32_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
+
+static const uint32_t record_size_bytes = 4096; // 4 KiB
+
+static const uint32_t merge_k_way = 2;
 
 struct part {
     // Unique only in a single pass scope, reused across passes
     uint64_t id;
 
-    uint64_t start;
-    size_t limit;
-    size_t pass;
+    uint64_t start_aligned;
+    uint32_t limit_aligned;
+    uint64_t record_count;
+    uint32_t pass;
     seastar::sstring path_cache;
 
-    part(const uint64_t id, const uint64_t start, const size_t limit, const size_t pass, const seastar::sstring path) : 
-        id(id), start(start), limit(limit), pass(pass), path_cache(path) {}
+    part(const uint64_t id, const uint64_t start_aligned, const uint32_t limit_aligned, const uint64_t record_count, const uint32_t pass, const seastar::sstring path) : 
+        id(id), start_aligned(start_aligned), limit_aligned(limit_aligned), record_count(record_count), pass(pass), path_cache(path) {}
 };
 
 class coordinator {
     const seastar::sstring& source_file_path;
-    size_t source_file_size;
+    uint64_t source_file_size;
+    seastar_file_smart source_file_ro_cache;
+    
+    uint32_t disk_read_dma_alignment_cache;
+    uint32_t disk_write_dma_alignment_cache;
     
     const unsigned int shard_count;
-    size_t memory_part_bytes_aligned;
 
-    size_t part_count_total;
+    uint32_t memory_part_whole_bytes_aligned;
+    uint64_t record_count_per_part_whole;
+
+    uint32_t memory_part_whole_bytes_aligned_merge_read;
+    uint32_t memory_part_whole_bytes_aligned_merge_write;
+
+    uint64_t part_count_total;
     bool last_part_short;
-    size_t part_count_per_shard_uniform;
+    uint64_t part_count_per_shard_uniform;
     unsigned int extra_part_count_whole;
 
-    size_t pass;
+    uint32_t pass;
     // Dequeue is implemented similar to a hashed array tree. It supports efficient random access
     // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
 
     seastar::sstring new_file_path(const int pass, const int part_id);
 
+    seastar::future<> probe_block_device();
     seastar::future<> plan_memory_usage();
+
     seastar::future<> sort_init();
     seastar::future<> sort_part(const int shard_id, const int part_idx);
     seastar::future<> sort_all();
@@ -110,33 +128,39 @@ coordinator::coordinator(const seastar::sstring& source_file_path) :
     shard_count(seastar::smp::count),
     parts_per_shard(shard_count) {}
 
-void assert_block_size(seastar::file f) {
-    assert(record_size_bytes == f.disk_read_dma_alignment() 
-        && record_size_bytes == f.disk_write_dma_alignment()
-        && "bad block size");
-}
-
 seastar::sstring coordinator::new_file_path(const int pass, const int part_id) {
     return source_file_path + ".sorted." + seastar::to_sstring(pass) + "." + seastar::to_sstring(part_id);
 }
 
+// Probe the attached block device
+seastar::future<> coordinator::probe_block_device() {
+    source_file_ro_cache = co_await seastar::open_file_dma(source_file_path, seastar::open_flags::ro);
+    disk_read_dma_alignment_cache = source_file_ro_cache.disk_read_dma_alignment();
+    disk_write_dma_alignment_cache = source_file_ro_cache.disk_write_dma_alignment();
+    assert(record_size_bytes == disk_read_dma_alignment_cache 
+        && record_size_bytes == disk_write_dma_alignment_cache
+        && "bad block size");
+}
+
 // Plans memory usage, to saturate available memory and also not OOM
 seastar::future<> coordinator::plan_memory_usage() {
-    auto f = co_await seastar::open_file_dma(source_file_path, seastar::open_flags::ro);
-    assert_block_size(f);
     auto memory_parts_total_bytes = seastar::memory::stats().total_memory()/*After OS reservation*/ - memory_reserve_userspace_total_bytes;
-    source_file_size = co_await f.size();
-    auto record_count_per_part_aligned = std::min(source_file_size, memory_parts_total_bytes) / shard_count / record_size_bytes;
-    memory_part_bytes_aligned = record_count_per_part_aligned * record_size_bytes;
+    source_file_size = co_await source_file_ro_cache.size();
+    record_count_per_part_whole = std::min(source_file_size, memory_parts_total_bytes) / shard_count / record_size_bytes;
+    memory_part_whole_bytes_aligned = record_count_per_part_whole * record_size_bytes;
+
+    memory_part_whole_bytes_aligned_merge_read = record_count_per_part_whole / (merge_k_way + 1) * record_size_bytes;
+    memory_part_whole_bytes_aligned_merge_write = memory_part_whole_bytes_aligned_merge_read;
 }
 
 seastar::future<> coordinator::sort_init() {
     ++pass;
-    
+
+    co_await probe_block_device();    
     co_await plan_memory_usage();
 
-    part_count_total = source_file_size / memory_part_bytes_aligned;
-    last_part_short = source_file_size % memory_part_bytes_aligned > 0;
+    part_count_total = source_file_size / memory_part_whole_bytes_aligned;
+    last_part_short = source_file_size % memory_part_whole_bytes_aligned > 0;
     part_count_per_shard_uniform = part_count_total / shard_count;
     extra_part_count_whole = part_count_total % shard_count;
     
@@ -148,51 +172,47 @@ seastar::future<> coordinator::sort_init() {
     uint64_t accum = 0, id = 0;
     for (unsigned int s = 0; s < shard_count; ++s) {
         for (unsigned int _ = 0; _ < part_count_per_shard_uniform; ++_) {
-            parts_per_shard[s].emplace_back(id, accum, memory_part_bytes_aligned, pass, new_file_path(pass, id));
+            parts_per_shard[s].emplace_back(id, accum, memory_part_whole_bytes_aligned, record_count_per_part_whole, pass, new_file_path(pass, id));
             ++id;
-            accum += memory_part_bytes_aligned;
+            accum += memory_part_whole_bytes_aligned;
         }
         // Assign extra parts sequentially
         if (s < extra_part_count_whole) {
-            parts_per_shard[s].emplace_back(id, accum, memory_part_bytes_aligned, pass, new_file_path(pass, id));
+            parts_per_shard[s].emplace_back(id, accum, memory_part_whole_bytes_aligned, record_count_per_part_whole, pass, new_file_path(pass, id));
             ++id;
-            accum += memory_part_bytes_aligned;
+            accum += memory_part_whole_bytes_aligned;
         }
     }
     // Assign the last short part to the last shard
     if (last_part_short) {
-        parts_per_shard[shard_count - 1].emplace_back(id, accum, source_file_size - accum, pass, new_file_path(pass, id));
+        auto memory_part_short_bytes_aligned = source_file_size - accum;
+        parts_per_shard[shard_count - 1].emplace_back(id, accum, memory_part_short_bytes_aligned, memory_part_short_bytes_aligned / record_size_bytes, pass, new_file_path(pass, id));
     }
 }
 
-static bool unwrap_strncmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
-    return std::strncmp(lhs.get(), rhs.get(), record_size_bytes) < 0;
+static int cmp(const void *rhs, const void *lhs) {
+    return strncmp((const char*)rhs, (const char*)lhs, record_size_bytes);
 }
 
 seastar::future<> coordinator::sort_part(const int shard_id, const int part_idx) {
-    std::vector<seastar::temporary_buffer<char>> records;
-
-    // Read part from storage
+    // Sequential read of a part from the storage
+    // dma_read() args must be disk_read_dma_alignment() aligned
     auto& part = parts_per_shard[shard_id][part_idx];
     auto in = co_await seastar::open_file_dma(source_file_path, seastar::open_flags::ro);
-    auto offset_read_limit = part.start + part.limit;
-    for (auto offset = part.start; offset < offset_read_limit; offset += record_size_bytes) {
-        auto buf = co_await in.dma_read<char>(offset, record_size_bytes);
-        records.push_back(std::move(buf));
-    }
+    auto buf = seastar::allocate_aligned_buffer<char>(part.limit_aligned, disk_write_dma_alignment_cache);
+    auto buf_ptr = buf.get();
+    co_await in.dma_read<char>(part.start_aligned, buf_ptr, part.limit_aligned);
+    
+    // Sort part in memory
+    qsort(buf_ptr, part.record_count, record_size_bytes, cmp);
 
-    // Sort part in memory, char case matters
-    std::sort(std::begin(records), std::end(records), unwrap_strncmp);
-
-    // Write a new sorted part to storage
+    // Sequantial write of a new sorted part to the storage
+    // dma_write() args must be disk_write_dma_alignment() aligned
     auto out = co_await seastar::open_file_dma(part.path_cache, seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
-    auto records_count = records.size();
-    uint64_t offset = 0;
-    for (size_t r = 0; r < records_count; ++r, offset += record_size_bytes) {
-        co_await out.dma_write<char>(offset, records[r].get(), record_size_bytes);
-    }
+    co_await out.dma_write<char>(0, buf_ptr, part.limit_aligned);
+
     // Zero start in all parts
-    part.start = 0;
+    part.start_aligned = 0;
 }
 
 seastar::future<> coordinator::sort_all() {
@@ -227,49 +247,60 @@ void coordinator::merge_pass_init() {
     }
 }
 
+static bool cmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
+    return std::strncmp(lhs.get(), rhs.get(), record_size_bytes) < 0;
+}
+
 seastar::future<> coordinator::merge_two_parts(const int shard_id, const int part_idx1, const int part_idx2) {
     auto& p1 = parts_per_shard[shard_id][part_idx1];
     auto& p2 = parts_per_shard[shard_id][part_idx2];
-    auto in1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
-    auto in2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
-    auto out = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
+    
+    auto in_file1 = co_await seastar::open_file_dma(p1.path_cache, seastar::open_flags::ro);
+    auto in_buf1 = seastar::make_file_input_stream(
+        std::move(in_file1),
+        p1.start_aligned,
+        {.buffer_size = memory_part_whole_bytes_aligned_merge_read, .read_ahead = 0, .dynamic_adjustments = nullptr}
+    );
+    auto in_file2 = co_await seastar::open_file_dma(p2.path_cache, seastar::open_flags::ro);
+    auto in_buf2 = seastar::make_file_input_stream(
+        std::move(in_file2),
+        p2.start_aligned,
+        {.buffer_size = memory_part_whole_bytes_aligned_merge_read, .read_ahead = 0, .dynamic_adjustments = nullptr}
+    );
+    
+    auto out_file = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
+    auto out_buf = co_await seastar::make_file_output_stream(
+        std::move(out_file), 
+        {.buffer_size = memory_part_whole_bytes_aligned_merge_write, .preallocation_size = 0, .write_behind = 1}
+    );
 
     // Parts are not empty
-    auto offset_read1 = p1.start;
-    auto offset_read_limit1 = p1.start + p1.limit;
-    auto buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
-    auto offset_read2 = p2.start;
-    auto offset_read_limit2 = p2.start + p2.limit;
-    auto buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-    uint64_t offset_write = 0;
-    while (true) {
-        if (unwrap_strncmp(buf1, buf2)) {
-            co_await out.dma_write<char>(offset_write, buf1.get(), record_size_bytes);
-            offset_read1 += record_size_bytes;
-            if (offset_read1 >= offset_read_limit1) {
-                break;
-            }
-            buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
+    auto buf1 = co_await in_buf1.read_exactly(record_size_bytes);
+    auto buf2 = co_await in_buf2.read_exactly(record_size_bytes);
+    // Empty buffer from read_exactly() effectively means EOF for fixed length string aligned file
+    while (!buf1.empty() && !buf2.empty()) {
+        if (cmp(buf1, buf2)) {
+            co_await out_buf.write(buf1.get(), record_size_bytes);
+            buf1 = co_await in_buf1.read_exactly(record_size_bytes);
         } else {
-            co_await out.dma_write<char>(offset_write, buf2.get(), record_size_bytes);
-            offset_read2 += record_size_bytes;
-            if (offset_read2 >= offset_read_limit2) {
-                break;
-            }
-            buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
+            co_await out_buf.write(buf2.get(), record_size_bytes);
+            buf2 = co_await in_buf2.read_exactly(record_size_bytes);
         }
-        offset_write += record_size_bytes;
     }
-    offset_write += record_size_bytes;
-    for (; offset_read1 < offset_read_limit1; offset_read1 += record_size_bytes, offset_write += record_size_bytes) {
-        buf1 = co_await in1.dma_read<char>(offset_read1, record_size_bytes);
-        co_await out.dma_write<char>(offset_write, buf1.get(), record_size_bytes);
+    // Merge remainder from part 1
+    while (!buf1.empty()) {
+        co_await out_buf.write(buf1.get(), record_size_bytes);
+        buf1 = co_await in_buf1.read_exactly(record_size_bytes);
     }
-    for (; offset_read2 < offset_read_limit2; offset_read2 += record_size_bytes, offset_write += record_size_bytes) {
-        buf2 = co_await in2.dma_read<char>(offset_read2, record_size_bytes);
-        co_await out.dma_write<char>(offset_write, buf2.get(), record_size_bytes);
+    // Merge remainder from part 2
+    while (!buf2.empty()) {
+        co_await out_buf.write(buf2.get(), record_size_bytes);
+        buf2 = co_await in_buf2.read_exactly(record_size_bytes);
     }
 
+    // Flush output buffer and close the stream and the underlying file
+    co_await out_buf.close();
+    
     // Unmap old files after merge is finished
     co_await seastar::remove_file(p1.path_cache);
     co_await seastar::remove_file(p2.path_cache);
@@ -280,12 +311,12 @@ void coordinator::merge_pass_finalize() {
     for (unsigned int s = 0; s < shard_count; ++s) {
         auto part_count_per_shard = parts_per_shard[s].size();
         if (part_count_per_shard > 1) {
-            for (size_t _ = 0; _ < part_count_per_shard / 2; ++_) {
+            for (uint64_t _ = 0; _ < part_count_per_shard / 2; ++_) {
                 auto p1 = parts_per_shard[s].front();
                 parts_per_shard[s].pop_front();
                 auto p2 = parts_per_shard[s].front();
                 parts_per_shard[s].pop_front();
-                parts_per_shard[s].emplace_back(p1.id, p1.start, p1.limit + p2.limit, pass, new_file_path(pass, p1.id));
+                parts_per_shard[s].emplace_back(p1.id, p1.start_aligned, p1.limit_aligned + p2.limit_aligned, p1.record_count + p2.record_count, pass, new_file_path(pass, p1.id));
                 --part_count_total;
             }
             // Rotate a remainder part to maintain sequentiality
