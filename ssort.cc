@@ -358,9 +358,11 @@ seastar::future<> coordinator::external_sort() {
 }
 
 int main(int argc, char** argv) {
-    seastar::app_template app;
+    seastar::app_template::config cfg;
+    cfg.auto_handle_sigint_sigterm = false;
+    seastar::app_template app(std::move(cfg));
+
     static const auto arg_path = "path";
-    
     // The sorted output is written into the path <path>.sorted
     app.add_positional_options({{
         arg_path, boost::program_options::value<seastar::sstring>()->default_value({}), "path of the file to sort", -1
