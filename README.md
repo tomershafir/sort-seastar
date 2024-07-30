@@ -5,10 +5,9 @@ External sort utility, written in C++ using Seastar framework.
 ## Build
 
 - Requires CMake 3.13.0, like Seastar.
-- Seastar commit: 908ccd936a63a37cd98470ad8bf44a20d969c51e
 
 ```Bash
-export seastar_dir=/Users/tomersha/Desktop/tomer/my-repos/seastar
+export seastar_dir=<seastar-build-parent-dir>
 cd sort-seastar
 mkdir -p build
 cmake -S . -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_PREFIX_PATH="$seastar_dir/build/release;$seastar_dir/build/release/_cooking/installed" -DCMAKE_MODULE_PATH=$seastar_dir/cmake -DENABLE_UBSAN=1 -B build
