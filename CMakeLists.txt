@@ -7,7 +7,6 @@ set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set (TARGET ssort)
 
-# TODO: enable other sanitizers
 option (ENABLE_UBSAN OFF)
 set (UBSAN_OPTIONS -fsanitize=undefined)
 

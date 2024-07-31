@@ -45,3 +45,6 @@
 # Output files
 *.sorted
 *.sorted.*
+
+# LLVM Tools
+compile_commands.json
