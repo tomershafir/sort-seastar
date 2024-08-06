@@ -11,7 +11,7 @@ External sort utility, written in C++ using Seastar framework.
 export seastar_dir=<seastar-build-parent-dir>
 cd sort-seastar
 mkdir -p build
-cmake -S . -G Ninja -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_PREFIX_PATH="$seastar_dir/build/release;$seastar_dir/build/release/_cooking/installed" -DCMAKE_MODULE_PATH=$seastar_dir/cmake -DENABLE_UBSAN=1 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build
+cmake -S . -G Ninja -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_PREFIX_PATH="$seastar_dir/build/release;$seastar_dir/build/release/_cooking/installed" -DCMAKE_MODULE_PATH=$seastar_dir/cmake -DENABLE_UBSAN=1 -B build
 cmake --build build
 ```
 
@@ -67,4 +67,4 @@ Linux ubuntu 6.5.10-orbstack-00110-gbcfe04c86d2f #1 SMP Fri Nov  3 10:20:37 UTC 
 - Evaluate other strategies to allocate available memory to read and write buffers on merge, depending on storage device type, e.g. add a knpb to prefer read or write sequentiality.
 - Make sure buffer size is small for small files to avoid reservation of unsued space and increase preallocation_size for large files: [https://github.com/tomershafir/seastar/blob/908ccd936a63a37cd98470ad8bf44a20d969c51e/include/seastar/core/fstream.hh#L94](https://github.com/tomershafir/seastar/blob/908ccd936a63a37cd98470ad8bf44a20d969c51e/include/seastar/core/fstream.hh#L94)
 - Add sanitizer builds
-- Include CMake targets for LLVM tools.
+- Include CMake targets for LLVM tools, document `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.

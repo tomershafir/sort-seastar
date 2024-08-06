@@ -46,5 +46,9 @@
 *.sorted
 *.sorted.*
 
+# Temporary test data
+test/testdata/*._sorted
+test/testdata/*.txt
+
 # LLVM Tools
 compile_commands.json
