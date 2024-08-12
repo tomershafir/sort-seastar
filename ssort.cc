@@ -52,6 +52,10 @@
 #include <seastar/core/memory.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/fstream.hh>
+#include <seastar/core/prometheus.hh>
+#include <seastar/http/httpd.hh>
+#include <seastar/net/inet_address.hh>
+#include <seastar/core/future.hh>
 
 namespace ssort {
 
@@ -368,13 +372,38 @@ int main(int argc, char** argv) {
         arg_path, boost::program_options::value<seastar::sstring>()->default_value({}), "path of the file to sort", -1
     }});
 
+    app.add_options()("prometheus_port", boost::program_options::value<uint16_t>()->default_value(9180), "Port to listen on. Set to zero in order to disable Prometheus.");
+    app.add_options()("prometheus_address", boost::program_options::value<seastar::sstring>()->default_value("0.0.0.0"), "Address of the prometheus server.");
+    
     // app.run() is noexcept
     return app.run(argc, argv, [&app] -> seastar::future<> {
         try {
-            auto args = app.configuration();
-            auto path = args[arg_path].as<seastar::sstring>();
+            auto cfg = app.configuration();
+
+            // Setup Prometheus server
+            seastar::httpd::http_server_control prometheus_server;
+            auto prom_port = cfg["prometheus_port"].as<uint16_t>();
+            if (prom_port) {
+                seastar::prometheus::config pctx;
+                seastar::net::inet_address prom_addr(cfg["prometheus_address"].as<seastar::sstring>());
+                pctx.metric_help = "ssort tool statistics";
+                pctx.prefix = "ssort";
+
+                co_await prometheus_server.start("prometheus");
+                co_await seastar::prometheus::start(prometheus_server, pctx);
+                co_await prometheus_server.listen(seastar::socket_address{prom_addr, prom_port}).handle_exception([prom_addr, prom_port] (auto e) {
+                    std::cerr << seastar::format("Could not start Prometheus server on {}:{}\n", prom_addr, prom_port, e);
+                    return seastar::make_exception_future<>(e);
+                });
+                std::cout << seastar::format("Prometheus server listening on {}:{}\n", prom_addr, prom_port);
+            }
+            
+            // Perform external sort
+            auto path = cfg[arg_path].as<seastar::sstring>();
             ssort::coordinator c(path);
             co_await c.external_sort();
+
+            co_await prometheus_server.stop();
         } catch (...) {
             std::cerr << "Failed to run: " << std::current_exception() << "\n";
         }
