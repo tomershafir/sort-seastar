@@ -62,23 +62,23 @@ namespace ssort {
 using seastar_file_smart = seastar::file;
 
 // Reserved memory for userspace tasks beside the parts
-static const uint32_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
+static const uint64_t memory_reserve_userspace_total_bytes = 134217728; // 128Mib
 
-static const uint32_t record_size_bytes = 4096; // 4 KiB
+static const uint64_t record_size_bytes = 4096; // 4 KiB
 
-static const uint32_t merge_k_way = 2;
+static const uint64_t merge_k_way = 2;
 
 struct part {
     // Unique only in a single pass scope, reused across passes
     uint64_t id;
 
     uint64_t start_aligned;
-    uint32_t limit_aligned;
+    uint64_t limit_aligned;
     uint64_t record_count;
-    uint32_t pass;
+    uint64_t pass;
     seastar::sstring path_cache;
 
-    part(const uint64_t id, const uint64_t start_aligned, const uint32_t limit_aligned, const uint64_t record_count, const uint32_t pass, const seastar::sstring path) : 
+    part(const uint64_t id, const uint64_t start_aligned, const uint64_t limit_aligned, const uint64_t record_count, const uint64_t pass, const seastar::sstring path) : 
         id(id), start_aligned(start_aligned), limit_aligned(limit_aligned), record_count(record_count), pass(pass), path_cache(path) {}
 };
 
@@ -87,12 +87,12 @@ class coordinator {
     uint64_t source_file_size;
     seastar_file_smart source_file_ro_cache;
     
-    uint32_t disk_read_dma_alignment_cache;
-    uint32_t disk_write_dma_alignment_cache;
+    uint64_t disk_read_dma_alignment_cache;
+    uint64_t disk_write_dma_alignment_cache;
     
     const unsigned int shard_count;
 
-    uint32_t memory_part_whole_bytes_aligned;
+    uint64_t memory_part_whole_bytes_aligned;
     uint64_t record_count_per_part_whole;
 
     uint32_t memory_part_whole_bytes_aligned_merge_read;
@@ -103,7 +103,7 @@ class coordinator {
     uint64_t part_count_per_shard_uniform;
     unsigned int extra_part_count_whole;
 
-    uint32_t pass;
+    uint64_t pass;
     // Dequeue is implemented similar to a hashed array tree. It supports efficient random access
     // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
