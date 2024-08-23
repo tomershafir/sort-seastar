@@ -45,7 +45,6 @@
 #include <deque>
 #include <cstring>
 #include <algorithm>
-#include <cstdlib>
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
@@ -56,6 +55,7 @@
 #include <seastar/http/httpd.hh>
 #include <seastar/net/inet_address.hh>
 #include <seastar/core/future.hh>
+#include <seastar/util/log.hh>
 
 namespace ssort {
 
@@ -67,6 +67,8 @@ static const uint64_t memory_reserve_userspace_total_bytes = 134217728; // 128Mi
 static const uint64_t record_size_bytes = 4096; // 4 KiB
 
 static const uint64_t merge_k_way = 2;
+
+static seastar::logger ssort_logger("ssort");
 
 struct part {
     // Unique only in a single pass scope, reused across passes
@@ -108,6 +110,8 @@ class coordinator {
     // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
 
+    seastar::sstring to_string();
+    
     seastar::sstring new_file_path(const int pass, const int part_id);
 
     seastar::future<> probe_block_device();
@@ -126,6 +130,41 @@ public:
     coordinator(const seastar::sstring& source_file_path);
     seastar::future<> external_sort();
 };
+
+seastar::sstring coordinator::to_string() {
+    seastar::sstring str = "{";
+    str += "\"source_file_size\":" + seastar::to_sstring(source_file_size);
+    str += ",\"pass\":" + seastar::to_sstring(pass);
+    str += ",\"disk_read_dma_alignment\":" + seastar::to_sstring(disk_read_dma_alignment_cache);
+    str += ",\"disk_write_dma_alignment\":" + seastar::to_sstring(disk_write_dma_alignment_cache);
+    str += ",\"shard_count\":" + seastar::to_sstring(shard_count);
+    str += ",\"pass\":" + seastar::to_sstring(pass);
+    str += ",\"parts_per_shard\":[";
+    unsigned int s = 0;
+    for (; s < shard_count; ++s) {
+        if (s > 0) {
+            str += ",";
+        }
+        str += "{\"shard\":" + seastar::to_sstring(s);
+        str += ",\"parts\":[";
+        for (unsigned int p = 0; p < parts_per_shard[s].size(); ++p) {
+            auto& sp = parts_per_shard[s][p];
+            if (p > 0) {
+                str += ",";
+            }
+            str += "{\"id\":" + seastar::to_sstring(sp.id);
+            str += ",\"start_aligned\":" + seastar::to_sstring(sp.start_aligned);
+            str += ",\"limit_aligned\":" + seastar::to_sstring(sp.limit_aligned);
+            str += ",\"record_count\":" + seastar::to_sstring(sp.record_count);
+            str += ",\"pass\":" + seastar::to_sstring(sp.pass);
+            str += ",\"path\":\"" + sp.path_cache;
+            str += "\"}";
+        }
+        str += "]}";
+    }
+    str += "]}";
+    return str;
+}
 
 coordinator::coordinator(const seastar::sstring& source_file_path) :
     source_file_path(source_file_path), 
@@ -192,6 +231,7 @@ seastar::future<> coordinator::sort_init() {
         auto memory_part_short_bytes_aligned = source_file_size - accum;
         parts_per_shard[shard_count - 1].emplace_back(id, accum, memory_part_short_bytes_aligned, memory_part_short_bytes_aligned / record_size_bytes, pass, new_file_path(pass, id));
     }
+    ssort_logger.debug("{}", to_string());
 }
 
 static int cmp(const void *rhs, const void *lhs) {
@@ -249,6 +289,7 @@ void coordinator::merge_pass_init() {
         }
         s = n;
     }
+    ssort_logger.debug("{}", to_string());
 }
 
 static bool cmp(const seastar::temporary_buffer<char>& lhs, const seastar::temporary_buffer<char>& rhs) {
@@ -374,7 +415,7 @@ int main(int argc, char** argv) {
 
     app.add_options()("prometheus_port", boost::program_options::value<uint16_t>()->default_value(9180), "Port to listen on. Set to zero in order to disable Prometheus.");
     app.add_options()("prometheus_address", boost::program_options::value<seastar::sstring>()->default_value("0.0.0.0"), "Address of the prometheus server.");
-    
+
     // app.run() is noexcept
     return app.run(argc, argv, [&app] -> seastar::future<> {
         try {
