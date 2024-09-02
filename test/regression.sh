@@ -19,9 +19,10 @@ for compressed_raw in $_SSORT_TESTDATA_PATH/*.txt.gz; do
     actual=${decompressed_raw}.sorted
     cmp -s $decompressed_sorted $actual
     if [ $? -ne 0 ]; then
-        echo "Error: expected file and actual file are not equal."
+        echo "Error: expected file ${decompressed_sorted} and actual file ${actual} are not equal."
         clean $decompressed_raw $decompressed_sorted
         exit 1
     fi
+    echo "Success: 0 errors found for ${actual}."
     clean $decompressed_raw $decompressed_sorted $actual
 done
