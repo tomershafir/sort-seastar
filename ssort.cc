@@ -45,6 +45,8 @@
 #include <deque>
 #include <cstring>
 #include <algorithm>
+#include <signal.h>
+#include <atomic>
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
@@ -56,6 +58,7 @@
 #include <seastar/net/inet_address.hh>
 #include <seastar/core/future.hh>
 #include <seastar/util/log.hh>
+#include <seastar/core/signal.hh>
 
 namespace ssort {
 
@@ -109,7 +112,9 @@ class coordinator {
     // Dequeue is implemented similar to a hashed array tree. It supports efficient random access
     // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
-
+    
+    std::atomic_bool interrupted = false;
+    
     seastar::sstring to_string();
     
     seastar::sstring new_file_path(const int pass, const int part_id);
@@ -119,22 +124,26 @@ class coordinator {
 
     seastar::future<> sort_init();
     seastar::future<> sort_part(const int shard_id, const int part_idx);
-    seastar::future<> sort_all();
+    seastar::future<> sort_all_interruptible();
     
     void merge_pass_init();
     seastar::future<> merge_two_parts(const int shard_id, const int part_idx1, const int part_idx2);
     void merge_pass_finalize();
-    seastar::future<> merge_all();
+    seastar::future<> merge_all_interruptible();
 
 public:
     coordinator(const seastar::sstring& source_file_path);
     seastar::future<> external_sort();
+    void interrupt();
 };
+
+void coordinator::interrupt() {
+    interrupted.store(true);
+}
 
 seastar::sstring coordinator::to_string() {
     seastar::sstring str = "{";
     str += "\"source_file_size\":" + seastar::to_sstring(source_file_size);
-    str += ",\"pass\":" + seastar::to_sstring(pass);
     str += ",\"disk_read_dma_alignment\":" + seastar::to_sstring(disk_read_dma_alignment_cache);
     str += ",\"disk_write_dma_alignment\":" + seastar::to_sstring(disk_write_dma_alignment_cache);
     str += ",\"shard_count\":" + seastar::to_sstring(shard_count);
@@ -259,14 +268,27 @@ seastar::future<> coordinator::sort_part(const int shard_id, const int part_idx)
     part.start_aligned = 0;
 }
 
-seastar::future<> coordinator::sort_all() {
+seastar::future<> coordinator::sort_all_interruptible() {
+    if (interrupted.load()) {
+        co_return;
+    }
     co_await sort_init();
+    if (interrupted.load()) {
+        co_return;
+    }
     co_await seastar::parallel_for_each(std::views::iota(0, static_cast<int>(shard_count)), [this] (int shard_id) {
         if (!parts_per_shard[shard_id].empty()) {
-            return seastar::smp::submit_to(shard_id, [this, shard_id] mutable {
-                const auto r = std::views::iota(0, static_cast<int>(parts_per_shard[shard_id].size()));
-                return seastar::do_for_each(r, [this, shard_id] (int part_idx) mutable {
-                    return sort_part(shard_id, part_idx);
+            return seastar::smp::submit_to(shard_id, [this, shard_id] {
+                return seastar::do_with(0, [this, shard_id] (int part_idx) -> seastar::future<> {
+                    auto part_count_per_shard = parts_per_shard[shard_id].size();
+                    co_await seastar::do_until(
+                        [this, part_count_per_shard, &part_idx] { return part_idx >= part_count_per_shard || interrupted.load(); }, 
+                        [this, shard_id, &part_idx] -> seastar::future<> {
+                            auto f = sort_part(shard_id, part_idx);
+                            ++part_idx;
+                            return f;
+                        }
+                    );
                 });
             });
         }
@@ -312,7 +334,6 @@ seastar::future<> coordinator::merge_two_parts(const int shard_id, const int par
         p2.start_aligned,
         {.buffer_size = memory_part_whole_bytes_aligned_merge_read, .read_ahead = 0, .dynamic_adjustments = nullptr}
     );
-    
     auto out_file = co_await seastar::open_file_dma(new_file_path(pass, p1.id), seastar::open_flags::create | seastar::open_flags::truncate | seastar::open_flags::rw);
     auto out_buf = co_await seastar::make_file_output_stream(
         std::move(out_file), 
@@ -374,30 +395,49 @@ void coordinator::merge_pass_finalize() {
     }
 }
 
-seastar::future<> coordinator::merge_all() {
+seastar::future<> coordinator::merge_all_interruptible() {
+    if (interrupted.load()) {
+        co_return;
+    }
     while (part_count_total > 1) {
         merge_pass_init();
+        if (interrupted.load()) {
+            co_return;
+        }
         co_await seastar::parallel_for_each(std::views::iota(0, static_cast<int>(shard_count)), [this] (int shard_id) {
             auto part_count_per_shard = parts_per_shard[shard_id].size();
             if (part_count_per_shard > 1) {
-                return seastar::smp::submit_to(shard_id, [this, shard_id, part_count_per_shard] mutable {
-                    const auto r = std::views::iota(0, static_cast<int>(part_count_per_shard / 2));
-                    return seastar::do_for_each(r, [this, shard_id] (int part_idx) mutable {
-                        return merge_two_parts(shard_id, part_idx * 2, part_idx * 2 + 1);
+                return seastar::smp::submit_to(shard_id, [this, shard_id, part_count_per_shard] {
+                    return seastar::do_with(0, [this, shard_id, part_count_per_shard] (int part_idx) -> seastar::future<> {
+                        auto part_idx_limit = part_count_per_shard - 1;
+                        co_await seastar::do_until(
+                            [this, &part_idx, part_idx_limit] { return part_idx >= part_idx_limit || interrupted.load(); }, 
+                            [this, shard_id, &part_idx] {
+                                auto f = merge_two_parts(shard_id, part_idx, part_idx + 1);
+                                part_idx += 2;
+                                return f;
+                            }
+                        );
                     });
                 });
-            }
+            } 
             return seastar::make_ready_future<>();
         });
+        if (interrupted.load()) {
+            break;
+        }
         merge_pass_finalize();
+    }
+    if (interrupted.load()) {
+        co_return;
     }
     // Remap final sorted file, the algorithm guarantees that parts_per_shard[0][0].path stores the path
     co_await seastar::rename_file(parts_per_shard[0][0].path_cache, source_file_path + ".sorted");
 }
 
 seastar::future<> coordinator::external_sort() {
-    co_await sort_all();
-    co_await merge_all();
+    co_await sort_all_interruptible();
+    co_await merge_all_interruptible();
 }
 
 }
@@ -421,6 +461,16 @@ int main(int argc, char** argv) {
         try {
             auto cfg = app.configuration();
 
+            // Perform external sort
+            auto path = cfg[arg_path].as<seastar::sstring>();
+            ssort::coordinator c(path);
+            
+            // Handle SIGINT/Ctrl+C
+            seastar::handle_signal(SIGINT, [&c] {
+                std::cout << "Interrupted, shutting down...\n";
+                c.interrupt();
+            }, true);
+
             // Setup Prometheus server
             seastar::httpd::http_server_control prometheus_server;
             auto prom_port = cfg["prometheus_port"].as<uint16_t>();
@@ -432,16 +482,13 @@ int main(int argc, char** argv) {
 
                 co_await prometheus_server.start("prometheus");
                 co_await seastar::prometheus::start(prometheus_server, pctx);
-                co_await prometheus_server.listen(seastar::socket_address{prom_addr, prom_port}).handle_exception([prom_addr, prom_port] (auto e) {
+                co_await prometheus_server.listen(seastar::socket_address{prom_addr, prom_port})
+                .handle_exception([prom_addr, prom_port] (auto e) {
                     std::cerr << seastar::format("Could not start Prometheus server on {}:{}\n", prom_addr, prom_port, e);
                     return seastar::make_exception_future<>(e);
                 });
-                std::cout << seastar::format("Prometheus server listening on {}:{}\n", prom_addr, prom_port);
             }
             
-            // Perform external sort
-            auto path = cfg[arg_path].as<seastar::sstring>();
-            ssort::coordinator c(path);
             co_await c.external_sort();
 
             co_await prometheus_server.stop();
