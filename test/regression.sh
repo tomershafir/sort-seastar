@@ -23,6 +23,6 @@ for compressed_raw in $_SSORT_TESTDATA_PATH/*.txt.gz; do
         clean $decompressed_raw $decompressed_sorted
         exit 1
     fi
-    echo "Success: 0 errors found for ${actual}."
+    echo "Success: ${actual}."
     clean $decompressed_raw $decompressed_sorted $actual
 done
