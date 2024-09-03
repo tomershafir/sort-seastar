@@ -83,7 +83,7 @@ struct part {
     uint64_t pass;
     seastar::sstring path_cache;
 
-    part(const uint64_t id, const uint64_t start_aligned, const uint64_t limit_aligned, const uint64_t record_count, const uint64_t pass, const seastar::sstring path) : 
+    part(const uint64_t id, const uint64_t start_aligned, const uint64_t limit_aligned, const uint64_t record_count, const uint64_t pass, const seastar::sstring&& path) : 
         id(id), start_aligned(start_aligned), limit_aligned(limit_aligned), record_count(record_count), pass(pass), path_cache(path) {}
 };
 
@@ -176,9 +176,9 @@ seastar::sstring coordinator::to_string() {
 }
 
 coordinator::coordinator(const seastar::sstring& source_file_path) :
-    source_file_path(source_file_path), 
+    source_file_path(source_file_path),
     shard_count(seastar::smp::count),
-    parts_per_shard(shard_count) {}
+    parts_per_shard(shard_count) /*reserve space for vector and initialize dequeues*/ {}
 
 seastar::sstring coordinator::new_file_path(const int pass, const int part_id) {
     return source_file_path + ".sorted." + seastar::to_sstring(pass) + "." + seastar::to_sstring(part_id);
@@ -461,9 +461,7 @@ int main(int argc, char** argv) {
         try {
             auto cfg = app.configuration();
 
-            // Perform external sort
-            auto path = cfg[arg_path].as<seastar::sstring>();
-            ssort::coordinator c(path);
+            ssort::coordinator c(cfg[arg_path].as<seastar::sstring>());
             
             // Handle SIGINT/Ctrl+C
             seastar::handle_signal(SIGINT, [&c] {
@@ -489,6 +487,7 @@ int main(int argc, char** argv) {
                 });
             }
             
+            // Perform external sort
             co_await c.external_sort();
 
             co_await prometheus_server.stop();
