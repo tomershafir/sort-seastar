@@ -83,6 +83,7 @@ struct part {
     uint64_t pass;
     seastar::sstring path_cache;
 
+    part() = default;
     part(const uint64_t id, const uint64_t start_aligned, const uint64_t limit_aligned, const uint64_t record_count, const uint64_t pass, const seastar::sstring&& path) : 
         id(id), start_aligned(start_aligned), limit_aligned(limit_aligned), record_count(record_count), pass(pass), path_cache(path) {}
 };
