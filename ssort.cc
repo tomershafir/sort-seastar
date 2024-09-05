@@ -60,6 +60,9 @@
 #include <seastar/util/log.hh>
 #include <seastar/core/signal.hh>
 
+#define SIG_TERM_EXIT_BASE 128
+#define SIGINT_EXIT SIG_TERM_EXIT_BASE + SIGINT
+
 namespace ssort {
 
 using seastar_file_smart = seastar::file;
@@ -85,7 +88,12 @@ struct part {
 
     part() = default;
     part(const uint64_t id, const uint64_t start_aligned, const uint64_t limit_aligned, const uint64_t record_count, const uint64_t pass, const seastar::sstring&& path) : 
-        id(id), start_aligned(start_aligned), limit_aligned(limit_aligned), record_count(record_count), pass(pass), path_cache(path) {}
+        id(id),
+        start_aligned(start_aligned),
+        limit_aligned(limit_aligned),
+        record_count(record_count),
+        pass(pass),
+        path_cache(path) {}
 };
 
 class coordinator {
@@ -114,7 +122,7 @@ class coordinator {
     // and efficient inserts/erases at the front/back, using a cache local contiguous storage.
     std::vector<std::deque<part>> parts_per_shard;
     
-    std::atomic_bool interrupted = false;
+    std::atomic_bool _interrupted = false;
     
     seastar::sstring to_string();
     
@@ -136,10 +144,15 @@ public:
     coordinator(const seastar::sstring& source_file_path);
     seastar::future<> external_sort();
     void interrupt();
+    bool interrupted();
 };
 
 void coordinator::interrupt() {
-    interrupted.store(true);
+    _interrupted.store(true);
+}
+
+bool coordinator::interrupted() {
+    return _interrupted.load();
 }
 
 seastar::sstring coordinator::to_string() {
@@ -179,7 +192,7 @@ seastar::sstring coordinator::to_string() {
 coordinator::coordinator(const seastar::sstring& source_file_path) :
     source_file_path(source_file_path),
     shard_count(seastar::smp::count),
-    parts_per_shard(shard_count) /*reserve space for vector and initialize dequeues*/ {}
+    parts_per_shard(shard_count) /*reserves space for vector and default inserts dequeues*/ {}
 
 seastar::sstring coordinator::new_file_path(const int pass, const int part_id) {
     return source_file_path + ".sorted." + seastar::to_sstring(pass) + "." + seastar::to_sstring(part_id);
@@ -270,11 +283,11 @@ seastar::future<> coordinator::sort_part(const int shard_id, const int part_idx)
 }
 
 seastar::future<> coordinator::sort_all_interruptible() {
-    if (interrupted.load()) {
+    if (_interrupted.load()) {
         co_return;
     }
     co_await sort_init();
-    if (interrupted.load()) {
+    if (_interrupted.load()) {
         co_return;
     }
     co_await seastar::parallel_for_each(std::views::iota(0, static_cast<int>(shard_count)), [this] (int shard_id) {
@@ -283,7 +296,7 @@ seastar::future<> coordinator::sort_all_interruptible() {
                 return seastar::do_with(0, [this, shard_id] (int part_idx) -> seastar::future<> {
                     auto part_count_per_shard = parts_per_shard[shard_id].size();
                     co_await seastar::do_until(
-                        [this, part_count_per_shard, &part_idx] { return part_idx >= part_count_per_shard || interrupted.load(); }, 
+                        [this, part_count_per_shard, &part_idx] { return part_idx >= part_count_per_shard || _interrupted.load(); }, 
                         [this, shard_id, &part_idx] -> seastar::future<> {
                             auto f = sort_part(shard_id, part_idx);
                             ++part_idx;
@@ -397,12 +410,12 @@ void coordinator::merge_pass_finalize() {
 }
 
 seastar::future<> coordinator::merge_all_interruptible() {
-    if (interrupted.load()) {
+    if (_interrupted.load()) {
         co_return;
     }
     while (part_count_total > 1) {
         merge_pass_init();
-        if (interrupted.load()) {
+        if (_interrupted.load()) {
             co_return;
         }
         co_await seastar::parallel_for_each(std::views::iota(0, static_cast<int>(shard_count)), [this] (int shard_id) {
@@ -412,7 +425,7 @@ seastar::future<> coordinator::merge_all_interruptible() {
                     return seastar::do_with(0, [this, shard_id, part_count_per_shard] (int part_idx) -> seastar::future<> {
                         auto part_idx_limit = part_count_per_shard - 1;
                         co_await seastar::do_until(
-                            [this, &part_idx, part_idx_limit] { return part_idx >= part_idx_limit || interrupted.load(); }, 
+                            [this, &part_idx, part_idx_limit] { return part_idx >= part_idx_limit || _interrupted.load(); }, 
                             [this, shard_id, &part_idx] {
                                 auto f = merge_two_parts(shard_id, part_idx, part_idx + 1);
                                 part_idx += 2;
@@ -424,12 +437,12 @@ seastar::future<> coordinator::merge_all_interruptible() {
             } 
             return seastar::make_ready_future<>();
         });
-        if (interrupted.load()) {
+        if (_interrupted.load()) {
             break;
         }
         merge_pass_finalize();
     }
-    if (interrupted.load()) {
+    if (_interrupted.load()) {
         co_return;
     }
     // Remap final sorted file, the algorithm guarantees that parts_per_shard[0][0].path stores the path
@@ -491,6 +504,12 @@ int main(int argc, char** argv) {
             // Perform external sort
             co_await c.external_sort();
 
+            // Waiting on external_sort() which supports interruption across shards,
+            // implicitly forms a barrier
+            if (c.interrupted()) {
+                exit(SIGINT_EXIT);
+            }
+            
             co_await prometheus_server.stop();
         } catch (...) {
             std::cerr << "Failed to run: " << std::current_exception() << "\n";
