@@ -479,7 +479,7 @@ int main(int argc, char** argv) {
             
             // Handle SIGINT/Ctrl+C
             seastar::handle_signal(SIGINT, [&c] {
-                std::cout << "Interrupted, shutting down...\n";
+                ssort::ssort_logger.info("{}", "Interrupted, shutting down...\n");
                 c.interrupt();
             }, true);
 
@@ -495,24 +495,24 @@ int main(int argc, char** argv) {
                 co_await prometheus_server.start("prometheus");
                 co_await seastar::prometheus::start(prometheus_server, pctx);
                 co_await prometheus_server.listen(seastar::socket_address{prom_addr, prom_port})
-                .handle_exception([prom_addr, prom_port] (auto e) {
-                    std::cerr << seastar::format("Could not start Prometheus server on {}:{}\n", prom_addr, prom_port, e);
-                    return seastar::make_exception_future<>(e);
-                });
+                    .handle_exception([prom_addr, prom_port] (auto e) {
+                        ssort::ssort_logger.error("Could not start Prometheus server on {}:{}\n", prom_addr, prom_port, e);
+                        return seastar::make_exception_future<>(e);
+                    });
             }
             
             // Perform external sort
             co_await c.external_sort();
+
+            co_await prometheus_server.stop();
 
             // Waiting on external_sort() which supports interruption across shards,
             // implicitly forms a barrier
             if (c.interrupted()) {
                 exit(SIGINT_EXIT);
             }
-            
-            co_await prometheus_server.stop();
         } catch (...) {
-            std::cerr << "Failed to run: " << std::current_exception() << "\n";
+            ssort::ssort_logger.error("Failed to run: {}", std::current_exception());
         }
     });
 }
